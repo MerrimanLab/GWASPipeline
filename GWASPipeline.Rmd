@@ -11,11 +11,10 @@ Given a set of trait files (cleaned and normlised), perform a standard GWAS + po
 
 ### Trait Preparation  
 
-We assume that the trait files are saved in a folder named "Traits". See examples.
+We assume that the trait files are saved in a folder named "Traits". This pipeline will ONLY work with a single trait file. If you have multiple traits, you should create a combined file, with one column for each trait. See ```GWAS_Trait_Wrangling.html``` for a worked example.
 
-Analyses will be performed in PLINK thus, we assume that there is a trait (phenotype) file that conforms to plink's specifications. Specifically: {FID, IID, trait_one}. Each column should be TAB or SPACE separated. For more info:  https://www.cog-genomics.org/plink2/input#pheno
+Analyses will be performed in PLINK thus, we assume that there is a trait (phenotype) file that conforms to plink's specifications. Specifically: ```{FID, IID, trait_one, trait_two...}```. Each column should be TAB or SPACE separated. For more info:  https://www.cog-genomics.org/plink2/input#pheno
 
-Plink allows you to create a master trait file containing all the traits that you want to test. However, we haven't tested this yet and the pipeline has not been designed to handle this yet. We recommend that you create a separate trait file for each trait.
 
 ### Genotypes
 
@@ -71,7 +70,8 @@ plink_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/PLINK/plink"
 parameters <- list(
     call_rate = 0.10,                       # rejects SNPs with more than this number of missing calls
     maf = 0.02,                             # rejects SNPs with a MAF < this threshold
-    pop_struct_dimensions = 5               # the number of principal components for population structure
+    pop_struct_dimensions = 5,              # the number of principal components for population structure
+    file_format = "bcf"
 )
 ```
 
@@ -190,24 +190,20 @@ A plot of the population structure for each chromosome will be saved in Results/
 
 ```{r}
 setwd(sprintf("%s/ScratchSpace", home_))
+start_time <- Sys.time()
 
-for (trait_ in trait_files) {
-    
-    cat(sprintf("
+get_columns <- function (x, dir_ = sprintf("%s/Traits", home_)) {
+    tmp <- fread(sprintf("%s/%s", dir_, x))
+    return (colnames(tmp)[-c(1, 2)])
+}
+all_traits <- get_columns(trait_files)
+pheno_file <- sprintf("%s/Traits/%s", home_, trait_files)
 
-    #
-    # Trait: %s
-    #
-
-    ", trait_))
-    
-    pheno_file <- sprintf("%s/Traits/%s", home_, trait_)
-    lcl_trait <- strsplit(trait_, "\\.")[[1]][1]
-    
-    for (geno_ in genotype_files) {
+# perform GWAS
+for (geno_ in genotype_files) {
         
         chromosome <- strsplit(geno_, "\\.")[[1]][1]
-        assoc_results <- sprintf("%s/ScratchSpace/%s_%s", home_, chromosome, lcl_trait)
+        assoc_results <- sprintf("%s/ScratchSpace/%s", home_, chromosome, lcl_trait)
         
         # QC steps
         cat(sprintf("
@@ -217,7 +213,7 @@ for (trait_ in trait_files) {
         geno_file <- sprintf("%s/Genotypes/%s", home_, geno_)
         cmd <- sprintf("
 
-        %s --bcf %s \\
+        %s --%s %s \\
               --const-fid \\
               --allow-extra-chr \\
               --keep %s \\
@@ -226,7 +222,7 @@ for (trait_ in trait_files) {
               --make-bed \\
               --out qc_genotypes
 
-        ", plink_, geno_file, pheno_file, parameters$call_rate, parameters$maf
+        ", plink_, parameters$file_format, geno_file, pheno_file, parameters$call_rate, parameters$maf
         )
         
         write(cmd, file = "plink.cmd")
@@ -234,7 +230,7 @@ for (trait_ in trait_files) {
         
         # population structure
         cat("Estimating population structure...")
-        cmd <- sprintf("%s --bfile %s --pca 10 --out population_structure", plink_, "qc_genotypes")
+        cmd <- sprintf("%s --bfile %s --pca %s --out population_structure", plink_, "qc_genotypes", parameters$pop_struct_dimensions)
         system(cmd)
     
         # Association test
@@ -252,14 +248,38 @@ for (trait_ in trait_files) {
         ", plink_, "qc_genotypes", pheno_file, "population_structure.eigenvec", assoc_results)
         system(cmd)
         
-    }
+}
+
+end_time <- Sys.time()
+print(sprintf("Started: %s, Ended: %s", start_time, end_time))
+print(sprintf("Total time take: %s", end_time - start_time))
+```
+
+## Visualisations  
+
+For each trait, concatenate the GWAS results from all chromosomes, produce Q-Q plots and a manhattan plot.
+
+```{r}
+for (trait_ in all_traits) {
+    
+    cat(sprintf("
+
+    #
+    # Trait: %s
+    #
+
+    ", trait_))
+    
+    
+    lcl_trait <- strsplit(trait_, "\\.")[[1]][1]
     
     # QC plots 
     # --------
     #   a) merge the unadjusted pvalues from each chromosome's results files
     #   b) save a Q-Q plot for each chromosome
     #   c) save a manhattan plot
-    merged_results <- rbindlist(lapply(list.files(sprintf("%s/ScratchSpace", home_), pattern = ".assoc.linear$"),
+    merged_results <- rbindlist(lapply(list.files(sprintf("%s/ScratchSpace", home_), 
+                                                  pattern = sprintf("%s.assoc.linear$", lcl_trait)),
                                        function (x) {
                                            tmp <- fread(x)
                                            return (tmp[TEST == "ADD"])
@@ -282,3 +302,6 @@ for (trait_ in trait_files) {
     dev.off()
 }
 ```
+
+
+git commit -m "plink with all phenos done, visualisations done. pipeline completed"
