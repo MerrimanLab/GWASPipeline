@@ -1,0 +1,284 @@
+---
+title: "GWASPipeline"
+author: "Nick Burns"
+date: "1 November 2016"
+output: html_document
+---
+
+# Medicago GWAS Pipeline
+
+Given a set of trait files (cleaned and normlised), perform a standard GWAS + population structure analysis. For more background, see Medicago_FirstGWAS_Test.
+
+### Trait Preparation  
+
+We assume that the trait files are saved in a folder named "Traits". See examples.
+
+Analyses will be performed in PLINK thus, we assume that there is a trait (phenotype) file that conforms to plink's specifications. Specifically: {FID, IID, trait_one}. Each column should be TAB or SPACE separated. For more info:  https://www.cog-genomics.org/plink2/input#pheno
+
+Plink allows you to create a master trait file containing all the traits that you want to test. However, we haven't tested this yet and the pipeline has not been designed to handle this yet. We recommend that you create a separate trait file for each trait.
+
+### Genotypes
+
+We assume that the Genotypes are either VCF or BCF files, saved in a folder named "Genotypes". Genotypes may be split into separate files per chromosome, or one large file.
+
+The default QC parameters are as follows:  
+
+  - reject SNPs with call frequency < 90%  
+  - reject SNPS with minor allele frequency (MAF) < 0.03  
+  
+These parameters can be changed in the Setup section below. This pipeline will handle the rest for you.
+
+### GWAS  
+
+This pipeline will:  
+
+  - plot the trait data (saved in Results/Visualisations)  
+  - determine the population structure  
+  - perform a standard GWAS adjusted for population structure, using plink  
+  - the results will be saved in Results/  
+  - a manhattan plot for each trait will be saved in Results/Visualisations  
+  
+### PLINK Setup  
+
+You will need PLINK to run this pipeline. To get PLINK up and running perform the following:  
+
+  1. Download the appropriate version of plink from here: https://www.cog-genomics.org/plink2  
+  2. Unpack the zipped plink folder somewhere convenient  
+  3. Make sure you set the plink_directory paramter in the Setup section below  
+  
+
+### Running the pipeline  
+
+Review the Setup section below:  
+
+  1. Change the working directory as appropriate (to the directory where you have the PLINK, Genotypes and Traits folders)  
+  2. Review the Genotype QC parameters, and change as appropriate (defaults are usually sufficient)  
+  3. Run each cell as required  
+  3. Have fun :)  
+  
+---------------------------------
+
+## Setup  
+
+Change the parameters below as required.
+
+```{r}
+# set the home & plink directory (please no spaces or funny characters)
+home_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline"
+plink_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/PLINK/plink"
+
+# Genotype QC settings
+parameters <- list(
+    call_rate = 0.10,                       # rejects SNPs with more than this number of missing calls
+    maf = 0.02,                             # rejects SNPs with a MAF < this threshold
+    pop_struct_dimensions = 5               # the number of principal components for population structure
+)
+```
+
+## Housekeeping  
+
+Run the following cell, it will install required pacakges, test for plink and setup the working directory.
+
+```{r}
+# install & load packages
+options(repos = "http://cran.uk.r-project.org")
+if (!require(data.table)) {    
+    install.packages("data.table")
+}
+if (!require(gridExtra)) {
+    install.packages("gridExtra")
+}
+if (!require(ggplot2)) {
+    install.packages("ggplot2")
+}
+if (!require(qqman)) {
+    install.packages("qqman")
+}
+
+library(ggplot2)
+library(data.table)
+library(gridExtra)
+library(qqman)
+
+
+# setup the working directory
+setwd(home_)
+
+if (!dir.exists("./Results")) {
+    dir.create(file.path(home_, "Results"))
+}
+if (!dir.exists("./Results/Visualisations")) {
+    dir.create(file.path(home_, "Results/Visualisations"))
+}
+if (!dir.exists("./ScratchSpace")) {
+    dir.create(file.path(home_, "ScratchSpace"))
+}
+
+
+# test plink installation
+if (!capture.output({ cat(system(sprintf("%s --version", plink_))) }) == 0) {
+    
+    cat(sprintf("
+        --------------------------------------------------------------------------------
+
+                                      !!!! WARNING !!!! 
+        
+        PLINK not found. Please review the plink_ directory in the Setup section.
+
+        --------------------------------------------------------------------------------
+    ", plink_))
+    
+}
+
+# extract trait files and genotype files  
+trait_files <- list.files("./Traits")
+genotype_files <- list.files("./Genotypes")
+
+if (any(c(length(trait_files) < 1, length(genotype_files) < 1))) {
+    
+    cat(sprintf("
+        --------------------------------------------------------------------------------
+
+                                      !!!! WARNING !!!! 
+        
+        Something has gone wrong with the trait and/or the genotype files. Please review.
+
+        There are %s trait files and %s genotype files. 
+
+        --------------------------------------------------------------------------------
+    ", length(trait_files), length(genotype_files)))
+    
+} else {
+    "Ready to proceed..."
+}
+```
+
+## Trait Visualisation  
+
+If you would like to visualise the traits, please run the following cell. Visualisations will be saved in Results/Visualisations. We assume a single trait file.
+
+NOTE: this is not required to run the GWAS, so you may skip it if you like.
+
+```{r}
+for (file_ in trait_files) {
+    
+    file_out <- strsplit(file_, "\\.")[[1]][1]
+    
+    tmp <- fread(sprintf("%s/Traits/%s", home_, file_, na.strings = '-9'))
+    tmp <- melt(tmp, id.vars = c("FID", "IID"))
+    
+    
+    g <- ggplot(tmp, aes(x = 1, y = value)) +
+             geom_boxplot() +
+             facet_wrap(~variable, scales = "free_y") +
+             theme_minimal()
+    ggsave(file = sprintf("%s/Results/Visualisations/%s.png", home_, file_out), g)
+   
+}
+```
+
+## GWAS Pipeline  
+
+Because we have a different number of accessions in each trait file, we will have to run this pipeline separately for each trait. For each trait then, we will run the following:  
+
+  - for each chromosome:  
+    - perform QC  
+    - estimate population structure  
+    - perform association study  
+    
+A plot of the population structure for each chromosome will be saved in Results/Visualisations. The results of the association study will be saved in Results. A final manhattan plot will be saved in Results/Visualisations, as well as visualised here.  
+
+```{r}
+setwd(sprintf("%s/ScratchSpace", home_))
+
+for (trait_ in trait_files) {
+    
+    cat(sprintf("
+
+    #
+    # Trait: %s
+    #
+
+    ", trait_))
+    
+    pheno_file <- sprintf("%s/Traits/%s", home_, trait_)
+    lcl_trait <- strsplit(trait_, "\\.")[[1]][1]
+    
+    for (geno_ in genotype_files) {
+        
+        chromosome <- strsplit(geno_, "\\.")[[1]][1]
+        assoc_results <- sprintf("%s/ScratchSpace/%s_%s", home_, chromosome, lcl_trait)
+        
+        # QC steps
+        cat(sprintf("
+            Performing QC steps on genotype file: %s
+        ", geno_))
+        
+        geno_file <- sprintf("%s/Genotypes/%s", home_, geno_)
+        cmd <- sprintf("
+
+        %s --bcf %s \\
+              --const-fid \\
+              --allow-extra-chr \\
+              --keep %s \\
+              --geno %s \\
+              --maf %s \\
+              --make-bed \\
+              --out qc_genotypes
+
+        ", plink_, geno_file, pheno_file, parameters$call_rate, parameters$maf
+        )
+        
+        write(cmd, file = "plink.cmd")
+        system("bash plink.cmd")
+        
+        # population structure
+        cat("Estimating population structure...")
+        cmd <- sprintf("%s --bfile %s --pca 10 --out population_structure", plink_, "qc_genotypes")
+        system(cmd)
+    
+        # Association test
+        cat("Performing association test...")
+        cmd <- sprintf("
+
+        %s --bfile %s \\
+                    --linear \\
+                    --adjust \\
+                    --pheno %s \\
+                    --all-pheno \\
+                    --covar %s \\
+                    --allow-no-sex \\
+                    --out %s
+        ", plink_, "qc_genotypes", pheno_file, "population_structure.eigenvec", assoc_results)
+        system(cmd)
+        
+    }
+    
+    # QC plots 
+    # --------
+    #   a) merge the unadjusted pvalues from each chromosome's results files
+    #   b) save a Q-Q plot for each chromosome
+    #   c) save a manhattan plot
+    merged_results <- rbindlist(lapply(list.files(sprintf("%s/ScratchSpace", home_), pattern = ".assoc.linear$"),
+                                       function (x) {
+                                           tmp <- fread(x)
+                                           return (tmp[TEST == "ADD"])
+                                       }))
+    # write merged results to Results directory
+    write.csv(merged_results, sprintf("%s/Results/%s_assoc_results.csv", home_, lcl_trait),
+              quote = F, row.names = F)
+    
+    # save Q-Q plot
+    for (chr in unique(merged_results[, CHR])) {
+        png(sprintf("%s/Results/Visualisations/%s_chromosome%s_QQPlot.png", home_, lcl_trait, chr))
+        qq(merged_results[CHR == chr, P], main = sprintf("%s chromosome %s", lcl_trait, chr))
+        dev.off()
+    }
+    
+    # save manhattan
+    png(sprintf("%s/Results/Visualisations/%s_manhattan_plot.png", home_, lcl_trait),
+        height = 600, width = 1500)
+    manhattan(merged_results[P < 0.001], main = sprintf("%s GWAS", lcl_trait))
+    dev.off()
+}
+```
