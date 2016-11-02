@@ -1,0 +1,89 @@
+---
+title: "TraitWrangling"
+author: "Nick Burns"
+date: "1 November 2016"
+output: html_document
+---
+
+# GWAS Trait File Wrangling  
+
+The GWAS pipeline is designed to work with either:  
+
+  a) one trait file for each trait  
+  b) (recommended), a single trait file with a trait in each column  
+  
+This document will help you with option B - creating a merged trait file from 5 individual traits. The final trait file will look like:
+
+```{r, echo = F}
+library(data.table)
+head(fread("/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/MedicagoTraits.combined"))
+```
+
+This is a plink-ready file, with the individual ID (IID = accession code) and a constant family ID (FID, all set to zero because we do not have 'families' in this dataset).
+
+## Individual files
+
+Here we are going to merge 5 individual trait files: ```FTa1.csv, FTa2.csv, HM_cf_FRSTFLWR.csv, StantonFloweringDate.csv, VRN_FT1.csv```. We will begin with the Stanton-Geddes dataset, because this has the most complete list of accessions (starting with a smaller dataset would cause issues with merging missing accessions).
+
+**Change your working directory**, then run the following.  
+
+```{r}
+working_directory <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/Traits/"
+setwd(working_directory)
+
+trait_files <- list.files(".")
+trait_files
+```
+
+We will merge these together, beginning with the Stanton-Geddes set.
+
+**Change the StantonGeddesID below to be the correct number in the list of fils**
+
+```{r}
+library(data.table)
+
+# a hack to make sure we start with the StantonGeddes file...
+StantonGeddesID <- 4
+
+other_file_ids <- c(1:length(trait_files))[-StantonGeddesID]    # this will drop the StantonGeddes file so that we don't double up
+trait_files <- trait_files[c(StantonGeddesID, other_file_ids)]
+trait_files
+```
+
+Now, run the below:
+
+```{r}
+wrangle <- function (trait_files, merged_traits = NULL, working_directory = working_directory) {
+    
+    if (length(trait_files) == 0) {
+        return (merged_traits)
+    }
+    
+    
+    tmp <- fread(sprintf("%s/%s", working_directory, trait_files[1]))
+    merged_traits <- if (is.null(merged_traits)) tmp
+                     else merge(merged_traits, tmp, by = c("FID", "IID"), all.x = TRUE)
+        
+    
+    return (wrangle(trait_files[-1], merged_traits = merged_traits, working_directory = working_directory))
+}
+
+merged_traits <- wrangle(trait_files, working_directory = working_directory)
+```
+
+Finally, we will write this out to disk. NOTE: that missing values will be written out as '-9', as per standard PLINK formatting (crazy I know!).
+
+**Change the file name below**  
+
+```{r}
+file_name <- "MedicagoTraits.combined"
+
+write.table(merged_traits,
+            file = file_name,
+            sep = "\t", quote = FALSE, row.names = FALSE, na = '-9')
+```
+
+Before running the GWAS pipeline place the combined trait file into the Pipeline/Traits directory. If it is already in this directory, make sure you remove any other trait files! :)
+
+
+  
