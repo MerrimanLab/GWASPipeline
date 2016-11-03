@@ -1,0 +1,110 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Trait Normalisation  
+
+Fundamentally, GWAS is just a linear model. Linear models assume that the response trait is approximately normally distributed. This is an important assumption - it dictates how wide the confidence intervals are around the final estimates (i.e. how certain it is about those estimates). Wildly skewed data will likely led to wildly uncertain estimates, and thus probably non-significant results.
+
+Plan:  
+
+  1. Load the combined trait file  
+  2. Visualise the distribution of each trait  
+  3. For those that are mildly skewed, perform a mild transformation (e.g. square root or log transform)  
+  4. For those that rae real whack, we will use the principal components (population structure) to try to estimate a more extreme boxcox transformation  
+  
+
+**NOTE:** This is the really important stuff :) This is the stuff that you want to get right before the GWAS. It'll take some thought, and I don't intend to (semi)automoate this anytime soon!  
+
+
+## Load and visualise traits  
+
+```{r}
+setwd("~/Documents/GitHub/GWASPipeline/Sandpit/TraitWrangling/")
+library(data.table)
+library(ggplot2)
+
+traits <- fread("MedicagoTraits.combined")
+head(traits)
+```
+
+Create histograms for each trait. 
+
+```{r}
+by_trait <- melt(traits, id.vars = c("FID", "IID"))
+head(by_trait)
+
+ggplot(by_trait, aes(x = value)) +
+    geom_histogram() +
+    facet_wrap(~ variable) +
+    theme_minimal()
+
+```
+
+There are a bunch of missing values in the traits :) We knew this, I just forgot. Let's visualise these again without these missing values, so that we can see what the actual data looks like.
+
+```{r}
+ggplot(by_trait[value != -9], aes(x = value)) +
+    geom_histogram() +
+    facet_wrap(~ variable, scales = "free_x") +
+    theme_minimal()
+```
+
+
+
+
+## Transform  
+
+There are some serious outliers here - let's try transformign these slightly and look again... (thanks Matt :p). Let's push these guys up above 0 first, then take the log.
+
+```{r}
+by_trait[value != -9, log_value := log10(value + 7)]
+ggplot(by_trait[value != -9], aes(x = log_value)) +
+    geom_histogram() +
+    facet_wrap(~ variable, scales = "free_x") +
+    theme_minimal()
+```
+
+This is a step in the right direction. Really though, these are all havily skewed - let's try some (completely) aribtrary boxcox transform and review again.
+
+```{r}
+
+
+population_structure <- fread("../PopulationStructure/Medicago_Pop_Structure.eigenvec")
+
+## merge in top 5 principal components from the population structure
+traits2 <- merge(traits, population_structure[, .(V1, V2, V3, V4, V5, V6, V7)], by.x = c("FID", "IID"), by.y = c("V1", "V2"), all.x = TRUE)
+head(traits2[, c(2:5,11:16), with = F])
+
+zs <- MASS::boxcox(GH2_FlDate + 7 ~ V3 + V4 + V5 + V6 + V7, data = traits2[GH2_FlDate != -9])
+#traits2[FTa1_Expn != -9, FTa1_Expn]
+
+```
+
+The ```boxcox()``` function tries to estimate the appropriate lamda value - in this case something like -1.5 is looking pretty jolly likely.  
+
+
+```{r}
+boxcox.transform <- function (x, lambda) {
+    z <- (x**lambda - 1) / lambda
+    
+    return (z)
+}
+
+
+hist(traits2[GH2_FlDate != -9, boxcox.transform(GH2_FlDate + 7, 2)])
+
+```
+
+Alright... looks like we need to do this separately for every trait. This will be a manual job. Here's the example for GH2_FlDate, reproduce this for all traits, then save the traits to disk.
+
+We are going to use a boxcox transform ```lambda = 2``` for GH2_FlDate, and we need to add 7 to ```GH2_FlDate``` first! (i forgot that the first time - oops.)
+
+```{r}
+traits[GH2_FlDate != -9, GH2_FlDate := boxcox.transform(GH2_FlDate + 7, 2)]
+```
+
+more
+
+

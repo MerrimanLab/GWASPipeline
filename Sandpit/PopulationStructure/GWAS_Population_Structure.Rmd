@@ -1,0 +1,119 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Population Structure  
+
+Goal: to determine pop structure from VCF files. Output: principal components.  
+
+Plan:  
+  - filter the genotypes via LD pruning  
+  - calculate 10 principal components  
+  - produce scree plot of eigenvalues  
+  
+  
+## Setup  
+
+```{r}
+plink_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/PLINK/plink"
+genotypes <- "/mnt/DataDrive/MedicagoFiles/Genotypes/PublicDownload/chr7-filtered-set-2014Apr15.bcf"
+
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+```
+
+## Create plink files  
+
+We can't work directly from the BCF files for this, because the SNPs do not have names :) So, let's create plink files with arbitrary SNP ids. We will also run basic QC (more notes to be added here...)
+
+NOTE to self: put the plink command up here and annotate the various options we are using...
+
+Plink command:
+
+```
+plink --bcf chr7-filtered-set-2014Apr15.bcf \\
+        --const-fid \\
+          --allow-extra-chr \\
+          --geno 0.1 \\
+          --maf 0.03 \\
+          --make-bed \\
+          --set-missing-var-ids @:#[b37] \\
+          --out genotypes
+```
+
+```{r}
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+
+cmd <- sprintf("
+    %s --bcf %s \\
+          --const-fid \\
+          --allow-extra-chr \\
+          --geno 0.1 \\
+          --maf 0.03 \\
+          --make-bed \\
+          --set-missing-var-ids @:#[b37] \\
+          --out genotypes
+
+", plink_, genotypes)
+system(cmd)
+```
+
+We have 247419 SNPs remaining after QC. This is a perfectly sensible number (roughly equivalent to what we would expect of high quality human genomes).
+
+## LD Pruning  
+
+We we walk the chromosome in 10KB steps. Where 2 SNPs are in LD > 0.9, plink will discard one of these, leaving the other there. I read a tutorial / journal article somehwere that said that it is best to determine population structure from SNPs which are *not in* high LD with one another. (If you think about principal components as a process which partitions correlation, then this makes sense yeah? :) .
+
+
+```{r}
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+
+cmd <- sprintf("
+               
+    %s --bfile %s \\
+       --indep-pairwise 10 10 0.7
+", plink_, "genotypes")
+
+system(cmd)
+```
+
+This threw away 53K SNPs, leaving us with 193K. Cool :) (you're happy with this right? :p )
+
+## PCA  
+
+```{r}
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+
+cmd <- sprintf("
+               
+    %s --bfile %s  \\
+       --extract %s  \\
+       --allow-extra-chr \\
+       --pca 20  \\
+       --out Medicago_Pop_Structure
+", plink_, "genotypes", "plink.prune.in")
+
+system(cmd)
+```
+
+
+## Scree plot  
+
+I need to have a good look at this scree plot and make sure I get the values right :)
+
+```{r}
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+
+var_values <- read.csv("Medicago_Pop_Structure.eigenval", header = F)[, 1]
+plot(cumsum(var_values[1:10]) / sum(var_values))
+lines(cumsum(var_values[1:10]) / sum(var_values))
+```
+
+
+
+Looking at this, there is kind of an elbow around 5 - 6 components. We would probably get away wtih using this many.
