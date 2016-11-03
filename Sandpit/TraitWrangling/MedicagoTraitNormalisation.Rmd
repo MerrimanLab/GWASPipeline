@@ -62,7 +62,7 @@ There are some serious outliers here - let's try transformign these slightly and
 by_trait[value != -9, log_value := log10(value + 7)]
 ggplot(by_trait[value != -9], aes(x = log_value)) +
     geom_histogram() +
-    facet_wrap(~ variable, scales = "free_x") +
+    facet_wrap(~ variable, scales = "free") +
     theme_minimal()
 ```
 
