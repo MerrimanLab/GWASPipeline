@@ -103,17 +103,49 @@ system(cmd)
 
 ## Scree plot  
 
-I need to have a good look at this scree plot and make sure I get the values right :)
+Plot of the eigenvalues against the factor (component) number.
 
 ```{r}
 working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
 setwd(working_dir)
 
 var_values <- read.csv("Medicago_Pop_Structure.eigenval", header = F)[, 1]
-plot(cumsum(var_values[1:10]) / sum(var_values))
-lines(cumsum(var_values[1:10]) / sum(var_values))
+plot(var_values, xlab = "Factor", ylab = "Eigenvalue")
+lines(var_values)
 ```
 
 
 
-Looking at this, there is kind of an elbow around 5 - 6 components. We would probably get away wtih using this many.
+Looking at this, there is an elbow around 5 components. We'd probably get away with using this many quite nicely.
+
+## Metaplot  
+
+Here, we will plot the first two principal components and colour by various attributes that we know about the data, specifically: country of origin and flowering date  
+
+```{r}
+working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+setwd(working_dir)
+library(data.table)
+library(ggplot2)
+
+pca <- fread("Medicago_Pop_Structure.eigenvec")
+meta <- fread("Pipeline/Traits/MedicagoTraits.combined")
+country <- fread("../AccessionCountries.csv")
+
+vis_data <- merge(pca[, 1:4, with = F], meta, by.x = c("V1", "V2"), by.y = c("FID", "IID"), all.x = TRUE)
+vis_data <- merge(vis_data, country, by.x = "V2", by.y = "Accession", all.x = TRUE)
+head(vis_data)
+
+
+png("~/Documents/GitHub/GWASPipeline/Sandpit/PopulationStructure/Medicago_Population_Structure.png", height = 1000, width = 1000)
+ggplot(vis_data, aes(x = V3, y = V4)) +
+    geom_point(aes(colour = Country), alpha = 0.5, size = 5) +
+    geom_text(aes(label = Country), colour = "darkblue", alpha = 0.6) +
+    guides(colour = "none") +
+    theme_minimal() +
+    theme(axis.text = element_blank()) + xlab("") + ylab("") + ggtitle("Population Structure")
+dev.off()
+```
+
+
+more
