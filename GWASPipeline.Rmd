@@ -202,7 +202,7 @@ pheno_file <- sprintf("%s/Traits/%s", home_, trait_files)
 for (geno_ in genotype_files) {
         
         chromosome <- strsplit(geno_, "\\.")[[1]][1]
-        assoc_results <- sprintf("%s/ScratchSpace/%s", home_, chromosome, lcl_trait)
+        assoc_results <- sprintf("%s/ScratchSpace/%s", home_, chromosome)
         
         # QC steps
         cat(sprintf("
@@ -281,7 +281,8 @@ for (trait_ in all_traits) {
     #   b) save a Q-Q plot for each chromosome
     #   c) save a manhattan plot
     merged_results <- rbindlist(lapply(list.files(sprintf("%s/ScratchSpace", home_), 
-                                                  pattern = sprintf("%s.assoc.linear$", lcl_trait)),
+                                                  pattern = sprintf("%s.assoc.linear$", lcl_trait),
+                                                  full.names = TRUE),
                                        function (x) {
                                            tmp <- fread(x)
                                            return (tmp[TEST == "ADD"])
