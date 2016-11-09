@@ -10,7 +10,7 @@ output: html_document
 The GWAS pipeline is designed to work with either:  
 
   a) one trait file for each trait  
-  b) (recommended), a single trait file with a trait in each column  
+  b) (recommended) a single trait file with a trait in each column  
   
 This document will help you with option B - creating a merged trait file from 5 individual traits. The final trait file will look like:
 
