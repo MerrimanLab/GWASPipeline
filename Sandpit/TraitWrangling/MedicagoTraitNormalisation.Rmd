@@ -12,7 +12,8 @@ Plan:
   1. Load the combined trait file  
   2. Visualise the distribution of each trait  
   3. For those that are mildly skewed, perform a mild transformation (e.g. square root or log transform)  
-  4. For those that rae real whack, we will use the principal components (population structure) to try to estimate a more extreme boxcox transformation  
+  4. For the rest, we will try quantile normalisation  
+  5. Failing either of the above, we will resort to using the boxcox transformation
   
 
 **NOTE:** This is the really important stuff :) This is the stuff that you want to get right before the GWAS. It'll take some thought, and I don't intend to (semi)automoate this anytime soon!  
@@ -21,7 +22,7 @@ Plan:
 ## Load and visualise traits  
 
 ```{r}
-setwd("~/Documents/GitHub/GWASPipeline/Sandpit/TraitWrangling/")
+setwd("c:/Users/Macknight Lab User/Documents/GitHub/GWASPipeline/Sandpit/TraitWrangling/")
 library(data.table)
 library(ggplot2)
 
@@ -32,12 +33,12 @@ head(traits)
 Create histograms for each trait. 
 
 ```{r}
-by_trait <- melt(traits, id.vars = c("FID", "IID"))
+by_trait <- reshape2::melt(traits, id.vars = c("FID", "IID"))
 head(by_trait)
 
 ggplot(by_trait, aes(x = value)) +
     geom_histogram() +
-    facet_wrap(~ variable) +
+    facet_wrap(~ variable, scales="free") +
     theme_minimal()
 
 ```
@@ -47,64 +48,64 @@ There are a bunch of missing values in the traits :) We knew this, I just forgot
 ```{r}
 ggplot(by_trait[value != -9], aes(x = value)) +
     geom_histogram() +
-    facet_wrap(~ variable, scales = "free_x") +
-    theme_minimal()
-```
-
-
-
-
-## Transform  
-
-There are some serious outliers here - let's try transformign these slightly and look again... (thanks Matt :p). Let's push these guys up above 0 first, then take the log.
-
-```{r}
-by_trait[value != -9, log_value := log10(value + 7)]
-ggplot(by_trait[value != -9], aes(x = log_value)) +
-    geom_histogram() +
     facet_wrap(~ variable, scales = "free") +
     theme_minimal()
 ```
 
-This is a step in the right direction. Really though, these are all havily skewed - let's try some (completely) aribtrary boxcox transform and review again.
+About the traits:  
+
+  - GH2_FlDate: heavily left skewed, but there is a good number of observations across the full range.   
+  - nodestofloweringV:  this look really good - not going to do anything with this one  
+  - the rest are all heavily right skewed - with some serious outliers. Will try quantile normalisation on these, removing outliers if necessary  
+
+
+## Transform  
+
+Going to try quantile normalisation right off the bat here. Great reference: http://biorxiv.org/content/biorxiv/early/2014/12/04/012203.full.pdf  (Irizarry is amazing!)
 
 ```{r}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("preprocessCore")
+library(preprocessCore)
 
+head(traits)
+trait_data <- as.matrix(traits[, -c(1,2), with = F])  # this is naf syntax, but that is how data.table works
+                                                      # if you want to select (or here, unselect) a column by it's position
+                                                      # you have to use the with = FALSE option.
+trait_data[trait_data == -9] <- NA                    # replace -9s with NA before normalising
 
-population_structure <- fread("../PopulationStructure/Medicago_Pop_Structure.eigenvec")
-
-## merge in top 5 principal components from the population structure
-traits2 <- merge(traits, population_structure[, .(V1, V2, V3, V4, V5, V6, V7)], by.x = c("FID", "IID"), by.y = c("V1", "V2"), all.x = TRUE)
-head(traits2[, c(2:5,11:16), with = F])
-
-zs <- MASS::boxcox(GH2_FlDate + 7 ~ V3 + V4 + V5 + V6 + V7, data = traits2[GH2_FlDate != -9])
-#traits2[FTa1_Expn != -9, FTa1_Expn]
-
+# quantile normalisation...
+trait_data <- preprocessCore::normalize.quantiles(trait_data)
 ```
 
-The ```boxcox()``` function tries to estimate the appropriate lamda value - in this case something like -1.5 is looking pretty jolly likely.  
 
+
+And now, let's visualise these to see how they look:
 
 ```{r}
-boxcox.transform <- function (x, lambda) {
-    z <- (x**lambda - 1) / lambda
-    
-    return (z)
+boxplot(trait_data)
+
+colnames(trait_data) <- colnames(traits)[-c(1,2)]
+for (trait in 1:ncol(trait_data)) {
+  hist(trait_data[, trait], main = colnames(trait_data)[trait])
 }
-
-
-hist(traits2[GH2_FlDate != -9, boxcox.transform(GH2_FlDate + 7, 2)])
-
 ```
 
-Alright... looks like we need to do this separately for every trait. This will be a manual job. Here's the example for GH2_FlDate, reproduce this for all traits, then save the traits to disk.
 
-We are going to use a boxcox transform ```lambda = 2``` for GH2_FlDate, and we need to add 7 to ```GH2_FlDate``` first! (i forgot that the first time - oops.)
+This is looking amazing! let's have a good look at the data though and make sure it makes sense:
 
 ```{r}
-traits[GH2_FlDate != -9, GH2_FlDate := boxcox.transform(GH2_FlDate + 7, 2)]
+trait_data
 ```
 
-more
 
 
+This looks really good. There are lots of NA values - but that's ok, it is what we expected. Now, we need to write this out to file...
+
+```{r}
+output_data <- cbind(traits[, .(FID, IID)], trait_data)
+head(output_data)
+
+
+write.csv(output_data, "Medicago_Normalised_Traits.csv", row.names = FALSE, quote = FALSE, na = '-9')
+```
