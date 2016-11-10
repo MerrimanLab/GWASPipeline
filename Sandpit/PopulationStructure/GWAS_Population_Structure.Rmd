@@ -5,101 +5,268 @@ output: html_notebook
 
 # Population Structure  
 
-Goal: to determine pop structure from VCF files. Output: principal components.  
+Goal: to determine pop structure from VCF files. 
 
-Plan:  
-  - filter the genotypes via LD pruning  
-  - calculate 10 principal components  
+###Input files:  
+   - We assume that all genotypes are stored as a VCF (see variant call format specifications: https://samtools.github.io/hts-specs/VCFv4.2.pdf), or BCF (binary VCF) file.  
+   - There is no need to pre-qc these genotypes. This workflow will filter on minor allele frequency and call frequency. If you also want to filter on Hardy-Weinberg equilibrium, feel free to adjust as required.  
+   
+###Output:   
+  - There are 2 key output files for this workflow:  
+    - **population_structure.eigenvec**: contains the principal components, i.e. the genotypes after rotation. These can be plotted (e.g. PC1 vs. PC2) to visualise population-levels trends in the dataset  
+    - **population_structure.eigenval**: contains the eigenvalues from the principal components analysis, i.e. the amount of variation explained by each principal component. 
+
+###Population Structure Workflow:
+  - filter the genotypes, removing pairs of SNPs which are in high linkage disequilibrium (LD) with each other.  
+  - QC the genotypes & perform principal components analysis via plink  
   - produce scree plot of eigenvalues  
+  - optionally, produce plots of the population structure
   
   
 ## Setup  
 
+The workflow assumes that you are using plink2 (aka plink 1.9, available here: https://www.cog-genomics.org/plink2). This has been tested on Ubuntu 16.04. It will require tweaking to run on Windows machines.  
+
+Please review the setup chunk below and make sure to set the root.dir option. This directory will become the working directory where all intermediates outputs are stored, so think about a sensible place for this (i.e. prob some scratch directory rather than a Git repo).
+  
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/mnt/DataDrive/MedicagoFiles/Analyses/")
+```
+
+Below:  
+
+  - declare you plink directory  
+  - specify the directory where your genotype files are stored  
+  - specify the working directory (all intermediate and final outputs will be placed here)  
+  - review the workflow parameters, and change if necessary  
+  - then, run the cell (will setup parameters, test plink installation and load necessary R packgaes)  
+  
+NOTE: that I have set the working_directory variable the same as the root.dir option in the setup chunk.  
+
 ```{r}
 plink_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/PLINK/plink"
-genotypes <- "/mnt/DataDrive/MedicagoFiles/Genotypes/PublicDownload/chr7-filtered-set-2014Apr15.bcf"
+genotype_directory <- "/mnt/DataDrive/MedicagoFiles/Genotypes/PublicDownload/"
+working_directory <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
 
-working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
-setwd(working_dir)
+# Genotype QC settings
+parameters <- list(
+    call_rate = 0.10,                       # rejects SNPs with more than this number of missing calls
+    maf = 0.05,                             # rejects SNPs with a MAF < this threshold
+    pop_struct_dimensions = 10,             # the number of principal components for population structure
+    file_format = "bcf"
+)
+
+
+# test plink installation
+if (!capture.output({ cat(system(sprintf("%s --version", plink_))) }) == 0) {
+
+    cat(sprintf("
+        --------------------------------------------------------------------------------
+
+                                      !!!! WARNING !!!! 
+
+        PLINK not found. Please review the plink_ directory in the Setup section.
+
+        --------------------------------------------------------------------------------
+    ", plink_))
+
+}
+
+# install & load packages
+options(repos = "http://cran.uk.r-project.org")
+if (!require(data.table)) {    
+    install.packages("data.table")
+}
+if (!require(ggplot2)) {
+    install.packages("ggplot2")
+}
+
+library(ggplot2)
+library(data.table)
 ```
 
-## Create plink files  
+## Genotype QC and data conversion   
 
-We can't work directly from the BCF files for this, because the SNPs do not have names :) So, let's create plink files with arbitrary SNP ids. We will also run basic QC (more notes to be added here...)
+Plink can accept VCF and BCF files directly as inputs. However, in our case the Medicago BCF files do not have SNP identifiers (annoying - yes!), necessary for the LD pruning step. Below, we will perform the genotype QC and output plink-formatted (bed, bim and fam) files. For more information about plink formats please refer to:  https://www.cog-genomics.org/plink2/formats#bed  
 
-NOTE to self: put the plink command up here and annotate the various options we are using...
-
-Plink command:
-
+The plink command is annotated below for reference:
 ```
-plink --bcf chr7-filtered-set-2014Apr15.bcf \\
-        --const-fid \\
-          --allow-extra-chr \\
-          --geno 0.1 \\
-          --maf 0.03 \\
-          --make-bed \\
-          --set-missing-var-ids @:#[b37] \\
-          --out genotypes
+plink --bcf <genotype_file> \\                     # points to a BCF file
+        --const-fid \\                             # the Medicago data has no family structure, so we ste FID = 0 for all (this is a plink-ism)  
+          --allow-extra-chr \\                     # fudge for the Medicago data
+          --geno 0.1 \\                            # call frequency threshold
+          --maf 0.05 \\                            # MAF threshold
+          --make-bed \\                            # create plink-formatted bed, bim, fam files
+          --set-missing-var-ids @:#[b37] \\        # create unique SNP ids (refer:https://www.cog-genomics.org/plink2/data#set_missing_var_ids)
+          --out <output_file>                      # the name of the output file
 ```
+
+Run the cell below. No changes necessary.  
+
+This cell will read in all files in the gentoype_directory, which end in the specified file format (in our Medicago example, the filenames must end in "bcf"). For each of these files, it will QC the genotypes and write out plink formatted files to ```working_directory/plink_genotype_files/```.  
+
+Review the cell below nd run (no changes necessary).  
 
 ```{r}
-working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
-setwd(working_dir)
+genotype_files <- list.files(genotype_directory, pattern = sprintf("%s$", parameters$file_format), full.names = TRUE)
+output_directory <- sprintf("%splink_genotype_files/", working_directory)
 
-cmd <- sprintf("
-    %s --bcf %s \\
-          --const-fid \\
-          --allow-extra-chr \\
-          --geno 0.1 \\
-          --maf 0.03 \\
-          --make-bed \\
-          --set-missing-var-ids @:#[b37] \\
-          --out genotypes
-
-", plink_, genotypes)
-system(cmd)
+for (genotype in genotype_files) {
+    
+    fileparts <- strsplit(genotype, "/")[[1]]
+    filename <- strsplit(fileparts[length(fileparts)], "\\.")[[1]][1]
+    
+    cmd <- sprintf("
+        %s --%s %s \\
+           --const-fid \\
+           --allow-extra-chr \\
+           --geno %s \\
+           --maf %s \\
+           --make-bed \\
+           --set-missing-var-ids @:#[b37] \\
+           --out %s%s
+    
+    ", plink_, parameters$file_format, genotype, parameters$call_freq, parameters$maf,
+       output_directory, filename)
+    system(cmd)
+    
+    
+}
 ```
 
-We have 247419 SNPs remaining after QC. This is a perfectly sensible number (roughly equivalent to what we would expect of high quality human genomes).
+The outputted plink files will have substantially less SNPs than the raw genotype files. The exact number of SNPs will be a reflection of the quality of the genotype calls.  
+
 
 ## LD Pruning  
 
-We we walk the chromosome in 10KB steps. Where 2 SNPs are in LD > 0.9, plink will discard one of these, leaving the other there. I read a tutorial / journal article somehwere that said that it is best to determine population structure from SNPs which are *not in* high LD with one another. (If you think about principal components as a process which partitions correlation, then this makes sense yeah? :) .
+For each plink genotype file, we will further reduce the number of SNPs based on pairwise LD. Li *et al* (2012, https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2995003/) provide quite a nice overview of this process. In particular, the methods section states:  
 
+"To reduce the LD between SNPs, PLINK was used to conduct SNP-pruning: we considered a sliding window of 1500 SNPs and calculated r2 between each pair of SNPs in that window; one of a pair of SNPs was removed if the pairwise r2 was greater than 0.2, then the window shifted 100 SNPs forward and the procedure was repeated. We used three-dimensional scatter plots of the top 3 significant principal components inferred by SMARTPCA to visualize population structure." (Li *et al*, 2012).
+
+We are not going to be quite as stringent as this. We will consider a sliding window of 3 kilobases, with a slide of 2 kilobases and R2 threshold of 0.5.  
+
+The following tutorial (http://www.jurgott.org/suzanne2012-07-23/GenABELexercise.pdf) (Wang & Leal, 2012) also has some nice notes with regards to determining population structure. In particular, the authors note that "for PCA and MDS you do not want to use markers which are in LD with each other. Here we only use a subset of GWAS markers for analysis of an actual GWAS data set would want to select a subset of markers which are not in LD" (p.8, Wang & Leal, 2012). This makes good sense, if you consider principal components analysis as a partitioning of covariance.  
+
+Review the cell below and run (no changes necessary).
 
 ```{r}
-working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
-setwd(working_dir)
+genotype_directory <- sprintf("%splink_genotype_files/", working_directory)
+genotype_files <- unlist(lapply(list.files(genotype_directory, pattern = ".bed$", full.names = FALSE),
+                                function (x) strsplit(x, "\\.")[[1]][1]))
 
-cmd <- sprintf("
+for (genotype in genotype_files) {
+    cmd <- sprintf("
                
-    %s --bfile %s \\
-       --indep-pairwise 10 10 0.7
-", plink_, "genotypes")
-
-system(cmd)
+        %s --bfile %s \\
+           --indep-pairwise 3 2 0.5 \\
+           --out %s
+    ", plink_, sprintf("%s%s", genotype_directory, genotype), sprintf("%s%s_pruned_snps", working_directory, genotype))
+    
+    system(cmd)   
+}
 ```
 
-This threw away 53K SNPs, leaving us with 193K. Cool :) (you're happy with this right? :p )
+Again, this will result in a substantially reduced set of SNPs. Below, we will filter each genotype file and concatenate the results into one merged plink file.  
 
-## PCA  
+Review the chunk below, and then run (no changes necessary). 
+**IMPORTANT** Review the snp_map output, and make sure that the genotypes and prune.in files map correctly - otherwise you will get nonsense later!
 
 ```{r}
-working_dir <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
-setwd(working_dir)
+genotype_directory <- sprintf("%splink_genotype_files/", working_directory)
+genotype_files <- list.files(genotype_directory, pattern = ".bed$", full.names = TRUE)
+snp_files <- list.files(working_directory, pattern = "prune.in", full.names = TRUE)
 
+# I am going assume (and test this to be confident!), that the genotype files will be in the 
+# same order as the prune.in files. This seems like a safe assumption, since they will be alphabetical.
+# HOWEVER... this should be reviewed!!!!
+
+snp_map <- list()
+for (idx in 1:length(genotype_files)) {
+    
+    fileparts <- strsplit(genotype_files[[idx]], "/")[[1]]
+    filename <- strsplit(fileparts[length(fileparts)], "\\.")[[1]][1]
+    snp_map[[filename]] <- snp_files[idx]
+}
+
+print(snp_map)
+```
+
+If the ```snp_map``` is correct above, review the cell below and run.
+
+```{r}
+
+for (genotype in genotype_files) {
+    
+    fileparts <- strsplit(genotype_files[[idx]], "/")[[1]]
+    filename <- strsplit(fileparts[length(fileparts)], "\\.")[[1]][1]
+    
+    filter_cmd <- sprintf("
+    
+        %s --bfile %s \\
+           --extract %s \\
+           --make-bed \\
+           --out %s
+    ", plink_, 
+       sprintf("%s%s", genotype_directory, filename), 
+       snp_map[[filename]],
+       spritnf("%s%s_ld_filtered", working_directory, filename))
+    
+    system(filter_cmd)
+    
+}
+
+```
+
+Finally, we will merge the filtered sets. Review the cell below and run (no changes required).
+(this is ugly code - sorry.)
+
+```{r}
+# to merge plink files, we need to create a file listing the files we want to merge
+merge_list <- file(sprintf("%sfiltered_files.txt", working_directory))
+filtered_files <- list.files(working_directory, pattern = "ld_filtered", full.names = TRUE)
+write(filtered_files[4:length(filtered_files)], merge_list)
+first_file <- strsplit(filtered_files[1], "\\.")[[1]][1]
+
+# now merge them...    
+combine_cmd <- sprintf("
+    
+    %s --bfile %s \\
+       --merge-list %s  \\
+       --make-bed \\
+       --out %s
+", plink_,
+   first_file,
+   merge_list,
+   sprintf("%smerged_genotypes", working_directory)
+)
+
+system(combine_cmd)
+
+```
+
+## Population structure  
+
+Now we get to the good parts. Commonly, principal components analysis (PCA) or multidimensional scaling (MDS) are used to determine population structure. MDS requires us to first calculate genetic distances (via identity-by-descent (IBD)). IBD calculations take forever. PCA however, can be calculated relatively quickly directly from the genotypes. Everything I have read suggests that PCA and MDS can be used interchangeably for approximating population structure. So to keep things efficient, we will use PCA.  
+
+Review the cell below and run (no changes required)
+```{r}
 cmd <- sprintf("
                
     %s --bfile %s  \\
        --extract %s  \\
        --allow-extra-chr \\
-       --pca 20  \\
-       --out Medicago_Pop_Structure
-", plink_, "genotypes", "plink.prune.in")
+       --pca %s  \\
+       --out %s
+", plink_, 
+   sprintf("%smerged_genotypes", working_directory), 
+   parameters$pop_struct_dimensions,
+   sprintf("%spopulation_structure", working_directory)
+)
 
 system(cmd)
 ```
 
+This should produce 2 output files, ```population_structure.eigenval``` and ```population_structure.eigenvec``` (note, there will also be a log file). The eigenval file contains the eigenvalues for each of the prinicipal components, and describes the amount of variation attritbuted to each component. The eigenvec file contains the tranformed gentoypes (i.e. the principal components). As far as I know, plink does not output the rotation matrix.  
 
 ## Scree plot  
 
