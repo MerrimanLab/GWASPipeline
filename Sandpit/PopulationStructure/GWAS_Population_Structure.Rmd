@@ -46,11 +46,11 @@ NOTE: that I have set the working_directory variable the same as the root.dir op
 ```{r}
 plink_ <- "/mnt/DataDrive/MedicagoFiles/Analyses/Pipeline/PLINK/plink"
 genotype_directory <- "/mnt/DataDrive/MedicagoFiles/Genotypes/PublicDownload/"
-working_directory <- "/mnt/DataDrive/MedicagoFiles/Analyses/"
+working_directory <- "/mnt/DataDrive/MedicagoFiles/Analyses/PopulationStructure/"
 
 # Genotype QC settings
 parameters <- list(
-    call_rate = 0.10,                       # rejects SNPs with more than this number of missing calls
+    call_freq = 0.10,                       # rejects SNPs with more than this number of missing calls
     maf = 0.05,                             # rejects SNPs with a MAF < this threshold
     pop_struct_dimensions = 10,             # the number of principal components for population structure
     file_format = "bcf"
@@ -105,12 +105,15 @@ Run the cell below. No changes necessary.
 
 This cell will read in all files in the gentoype_directory, which end in the specified file format (in our Medicago example, the filenames must end in "bcf"). For each of these files, it will QC the genotypes and write out plink formatted files to ```working_directory/plink_genotype_files/```.  
 
-Review the cell below nd run (no changes necessary).  
+Review the cell below and run (no changes necessary).  
 
 ```{r}
 genotype_files <- list.files(genotype_directory, pattern = sprintf("%s$", parameters$file_format), full.names = TRUE)
 output_directory <- sprintf("%splink_genotype_files/", working_directory)
 
+if (!dir.exists(output_directory)) {
+    dir.create(file.path(output_directory))
+}
 for (genotype in genotype_files) {
     
     fileparts <- strsplit(genotype, "/")[[1]]
@@ -124,10 +127,10 @@ for (genotype in genotype_files) {
            --maf %s \\
            --make-bed \\
            --set-missing-var-ids @:#[b37] \\
-           --out %s%s
+           --out %s
     
     ", plink_, parameters$file_format, genotype, parameters$call_freq, parameters$maf,
-       output_directory, filename)
+       sprintf("%s%s", output_directory, filename))
     system(cmd)
     
     
@@ -143,14 +146,14 @@ For each plink genotype file, we will further reduce the number of SNPs based on
 
 "To reduce the LD between SNPs, PLINK was used to conduct SNP-pruning: we considered a sliding window of 1500 SNPs and calculated r2 between each pair of SNPs in that window; one of a pair of SNPs was removed if the pairwise r2 was greater than 0.2, then the window shifted 100 SNPs forward and the procedure was repeated. We used three-dimensional scatter plots of the top 3 significant principal components inferred by SMARTPCA to visualize population structure." (Li *et al*, 2012).
 
-We are not going to be quite as stringent as this. We will consider a sliding window of 3 kilobases, with a slide of 2 kilobases and R2 threshold of 0.5.  
+We are not going to be quite as stringent as this. We will consider a sliding window of 10 kilobases, with a slide of 10 kilobases and R2 threshold of 0.5.  
 
 The following tutorial (http://www.jurgott.org/suzanne2012-07-23/GenABELexercise.pdf) (Wang & Leal, 2012) also has some nice notes with regards to determining population structure. In particular, the authors note that "for PCA and MDS you do not want to use markers which are in LD with each other. Here we only use a subset of GWAS markers for analysis of an actual GWAS data set would want to select a subset of markers which are not in LD" (p.8, Wang & Leal, 2012). This makes good sense, if you consider principal components analysis as a partitioning of covariance.  
 
 Review the cell below and run (no changes necessary).
 
 ```{r}
-genotype_directory <- sprintf("%splink_genotype_files/", working_directory)
+genotype_directory <- output_directory
 genotype_files <- unlist(lapply(list.files(genotype_directory, pattern = ".bed$", full.names = FALSE),
                                 function (x) strsplit(x, "\\.")[[1]][1]))
 
@@ -158,7 +161,7 @@ for (genotype in genotype_files) {
     cmd <- sprintf("
                
         %s --bfile %s \\
-           --indep-pairwise 3 2 0.5 \\
+           --indep-pairwise 10 10 0.5 \\
            --out %s
     ", plink_, sprintf("%s%s", genotype_directory, genotype), sprintf("%s%s_pruned_snps", working_directory, genotype))
     
@@ -172,7 +175,7 @@ Review the chunk below, and then run (no changes necessary).
 **IMPORTANT** Review the snp_map output, and make sure that the genotypes and prune.in files map correctly - otherwise you will get nonsense later!
 
 ```{r}
-genotype_directory <- sprintf("%splink_genotype_files/", working_directory)
+genotype_directory <- output_directory
 genotype_files <- list.files(genotype_directory, pattern = ".bed$", full.names = TRUE)
 snp_files <- list.files(working_directory, pattern = "prune.in", full.names = TRUE)
 
@@ -181,7 +184,7 @@ snp_files <- list.files(working_directory, pattern = "prune.in", full.names = TR
 # HOWEVER... this should be reviewed!!!!
 
 snp_map <- list()
-for (idx in 1:length(genotype_files)) {
+for (idx in 1:length(snp_files)) {
     
     fileparts <- strsplit(genotype_files[[idx]], "/")[[1]]
     filename <- strsplit(fileparts[length(fileparts)], "\\.")[[1]][1]
@@ -195,8 +198,11 @@ If the ```snp_map``` is correct above, review the cell below and run.
 
 ```{r}
 
-for (genotype in genotype_files) {
+for (genotype in names(snp_map)) {
     
+    tmp <- sprintf("%s%s",output_directory, genotype)
+    
+    idx <- which(names(snp_map) == genotype)
     fileparts <- strsplit(genotype_files[[idx]], "/")[[1]]
     filename <- strsplit(fileparts[length(fileparts)], "\\.")[[1]][1]
     
@@ -208,8 +214,8 @@ for (genotype in genotype_files) {
            --out %s
     ", plink_, 
        sprintf("%s%s", genotype_directory, filename), 
-       snp_map[[filename]],
-       spritnf("%s%s_ld_filtered", working_directory, filename))
+       snp_map[[genotype]],
+       sprintf("%s%s_ld_filtered", output_directory, filename))
     
     system(filter_cmd)
     
@@ -223,8 +229,10 @@ Finally, we will merge the filtered sets. Review the cell below and run (no chan
 ```{r}
 # to merge plink files, we need to create a file listing the files we want to merge
 merge_list <- file(sprintf("%sfiltered_files.txt", working_directory))
-filtered_files <- list.files(working_directory, pattern = "ld_filtered", full.names = TRUE)
-write(filtered_files[4:length(filtered_files)], merge_list)
+filtered_files <- list.files(output_directory, pattern = "ld_filtered.bed", full.names = TRUE)
+filtered_files <- unlist(lapply(filtered_files, function (x) strsplit(x, "\\.")[[1]][1]))
+
+write(filtered_files[-1], merge_list)
 first_file <- strsplit(filtered_files[1], "\\.")[[1]][1]
 
 # now merge them...    
@@ -236,8 +244,8 @@ combine_cmd <- sprintf("
        --out %s
 ", plink_,
    first_file,
-   merge_list,
-   sprintf("%smerged_genotypes", working_directory)
+   sprintf("%sfiltered_files.txt", working_directory),
+   sprintf("%smerged_genotypes", output_directory)
 )
 
 system(combine_cmd)
@@ -253,14 +261,13 @@ Review the cell below and run (no changes required)
 cmd <- sprintf("
                
     %s --bfile %s  \\
-       --extract %s  \\
        --allow-extra-chr \\
        --pca %s  \\
        --out %s
 ", plink_, 
-   sprintf("%smerged_genotypes", working_directory), 
+   sprintf("%smerged_genotypes", output_directory), 
    parameters$pop_struct_dimensions,
-   sprintf("%spopulation_structure", working_directory)
+   sprintf("%spopulation_structure", output_directory)
 )
 
 system(cmd)
